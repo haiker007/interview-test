@@ -5,14 +5,16 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
- * Condition for rule evaluation.
+ * Condition for rule evaluation (Value Object stored as JSON).
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class Condition {
+public class Condition implements Serializable {
     private String attribute;
     private Operator operator;
     private Object value;

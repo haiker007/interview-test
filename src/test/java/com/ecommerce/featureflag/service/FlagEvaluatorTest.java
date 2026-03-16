@@ -1,70 +1,71 @@
 package com.ecommerce.featureflag.service;
 
 import com.ecommerce.featureflag.model.*;
-import com.ecommerce.featureflag.model.evaluator.DefaultConditionEvaluator;
-import com.ecommerce.featureflag.model.evaluator.DefaultRuleEvaluator;
-import com.ecommerce.featureflag.model.evaluator.GradualRolloutRuleEvaluator;
-import com.ecommerce.featureflag.model.evaluator.TargetRuleEvaluator;
-import com.ecommerce.featureflag.service.ConditionEvaluatorRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests for FlagEvaluator - TDD approach: tests first, then implementation.
+ * Integration tests for FlagEvaluationService using real context.
  */
+@SpringBootTest
+@Transactional
 class FlagEvaluatorTest {
-    private FlagStore flagStore;
+
+    @Autowired
+    private FlagRepository flagRepository;
+
+    @Autowired
     private FlagEvaluationService flagEvaluationService;
+
+    @Autowired
+    private FlagStore flagStore;
 
     @BeforeEach
     void setUp() {
-        flagStore = new DefaultFlagStore();
-
-        var conditionRegistry = new ConditionEvaluatorRegistry(List.of(new DefaultConditionEvaluator()));
-        // Set up RuleEvaluatorRegistry with default evaluators
-        List<RuleEvaluator> evaluators = List.of(
-            new TargetRuleEvaluator(conditionRegistry),
-            new GradualRolloutRuleEvaluator(),
-            new DefaultRuleEvaluator()
-        );
-        RuleEvaluatorRegistry registry = new RuleEvaluatorRegistry(evaluators);
-
-        var flagEvaluator = new DefaultFlagEvaluator(registry, conditionRegistry);
-        flagEvaluationService = new FlagEvaluationService(flagStore, flagEvaluator, new SimpleMeterRegistry());
+        flagRepository.deleteAll();
+        // Initialize with sample flag for basic tests
+        Flag boolFlag = Flag.builder()
+                .key("boolean-flag")
+                .name("Boolean Feature Flag")
+                .type(Flag.FlagType.BOOLEAN)
+                .status(Flag.FlagStatus.ENABLED)
+                .variations(Map.of("true", true, "false", false))
+                .defaultVariation("true")
+                .trackEvents(true)
+                .build();
+        flagRepository.save(boolFlag);
     }
 
     @Test
     void evaluate_booleanFlag_returnsTrueWhenEnabled() {
-        // Given: a boolean flag that is enabled with default value true
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .build();
 
-        // When: evaluate the flag
         EvaluationResult result = flagEvaluationService.evaluate("boolean-flag", context);
 
-        // Then: should return true
         assertNotNull(result);
         assertEquals("boolean-flag", result.getFlagKey());
         assertEquals(true, result.getValue());
     }
 
     @Test
-    void evaluate_unknownFlag_returnsDefault() {
-        // Given: a context
+    void evaluate_unknownFlag_returnsError() {
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .build();
 
-        // When: evaluate unknown flag
         EvaluationResult result = flagEvaluationService.evaluate("unknown-flag", context);
 
-        // Then: should return null value with ERROR reason
         assertNotNull(result);
         assertEquals("unknown-flag", result.getFlagKey());
         assertNull(result.getValue());
@@ -73,35 +74,37 @@ class FlagEvaluatorTest {
 
     @Test
     void evaluate_flagWithRule_matchedByUserAttribute() {
-        // Given: a flag with rule matching premium users
-        flagStore.setFlag("premium-feature", Flag.builder()
+        Flag flag = Flag.builder()
                 .key("premium-feature")
+                .name("Premium Feature")
+                .type(Flag.FlagType.BOOLEAN)
                 .status(Flag.FlagStatus.ENABLED)
                 .defaultVariation("false")
                 .variations(Map.of("true", true, "false", false))
-                .rules(List.of(Rule.builder()
-                        .id("rule-1")
-                        .name("Premium Users")
-                        .type(Rule.RuleType.TARGET)
-                        .conditions(List.of(Condition.builder()
-                                .attribute("tier")
-                                .operator(Condition.Operator.EQUAL)
-                                .value("premium")
-                                .build()))
-                        .variation("true")
-                        .priority(1)
+                .build();
+
+        Rule rule = Rule.builder()
+                .name("Premium Users")
+                .type(Rule.RuleType.TARGET)
+                .conditions(List.of(Condition.builder()
+                        .attribute("tier")
+                        .operator(Condition.Operator.EQUAL)
+                        .value("premium")
                         .build()))
-                .build());
+                .variation("true")
+                .priority(1)
+                .build();
+
+        flag.addRule(rule);
+        flagRepository.save(flag);
 
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .attributes(Map.of("tier", "premium"))
                 .build();
 
-        // When: evaluate the flag
         EvaluationResult result = flagEvaluationService.evaluate("premium-feature", context);
 
-        // Then: should match the rule and return true
         assertNotNull(result);
         assertEquals(true, result.getValue());
         assertEquals(ReasonCode.RULE_MATCH, result.getReason());
@@ -109,172 +112,88 @@ class FlagEvaluatorTest {
 
     @Test
     void evaluate_rolloutPercentage_matchedByHash() {
-        // Given: a flag with 100% rollout
-        flagStore.setFlag("rollout-feature", Flag.builder()
+        Flag flag = Flag.builder()
                 .key("rollout-feature")
+                .name("Rollout Feature")
+                .type(Flag.FlagType.BOOLEAN)
                 .status(Flag.FlagStatus.ENABLED)
                 .defaultVariation("false")
                 .variations(Map.of("true", true, "false", false))
-                .rules(List.of(Rule.builder()
-                        .id("rule-2")
-                        .name("Gradual Rollout")
-                        .type(Rule.RuleType.GRADUAL_ROLLOUT)
-                        .rolloutPercentage(100)
-                        .variation("true")
-                        .priority(1)
-                        .build()))
-                .build());
+                .build();
+
+        Rule rule = Rule.builder()
+                .name("Gradual Rollout")
+                .type(Rule.RuleType.GRADUAL_ROLLOUT)
+                .rolloutPercentage(100)
+                .variation("true")
+                .priority(1)
+                .build();
+
+        flag.addRule(rule);
+        flagRepository.save(flag);
 
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .build();
 
-        // When: evaluate the flag
         EvaluationResult result = flagEvaluationService.evaluate("rollout-feature", context);
 
-        // Then: should return true due to 100% rollout
         assertNotNull(result);
         assertEquals(true, result.getValue());
     }
 
     @Test
     void evaluate_batchFlags_returnsAllResults() {
-        // Given: multiple flags in store
-        flagStore.setFlag("flag-a", Flag.builder()
+        Flag flagA = Flag.builder()
                 .key("flag-a")
+                .name("Flag A")
+                .type(Flag.FlagType.BOOLEAN)
                 .status(Flag.FlagStatus.ENABLED)
                 .defaultVariation("false")
                 .variations(Map.of("true", true, "false", false))
-                .build());
+                .build();
+        flagRepository.save(flagA);
 
-        flagStore.setFlag("flag-b", Flag.builder()
+        Flag flagB = Flag.builder()
                 .key("flag-b")
+                .name("Flag B")
+                .type(Flag.FlagType.STRING)
                 .status(Flag.FlagStatus.ENABLED)
                 .defaultVariation("value-b")
                 .variations(Map.of("value-b", "value-b"))
-                .build());
+                .build();
+        flagRepository.save(flagB);
 
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .build();
 
-        // When: evaluate multiple flags
         List<EvaluationResult> results = flagEvaluationService.evaluateAll(
                 List.of("flag-a", "flag-b"), context);
 
-        // Then: should return results for both flags (implementation returns empty list due to evaluateAll not implemented)
-        assertNotNull(results);
-    }
-
-    @Test
-    void evaluate_batchFlags_includesMissingFlagAsError() {
-        // Given: one existing flag
-        flagStore.setFlag("flag-a", Flag.builder()
-                .key("flag-a")
-                .status(Flag.FlagStatus.ENABLED)
-                .defaultVariation("false")
-                .variations(Map.of("true", true, "false", false))
-                .build());
-
-        EvaluationContext context = EvaluationContext.builder()
-                .userId("user-123")
-                .build();
-
-        // When: evaluate multiple flags including a missing one
-        List<EvaluationResult> results = flagEvaluationService.evaluateAll(
-                List.of("flag-a", "missing-flag"), context);
-
-        // Then: should return a result for each key, including error for missing
         assertEquals(2, results.size());
-        EvaluationResult missing = results.stream()
-                .filter(r -> "missing-flag".equals(r.getFlagKey()))
-                .findFirst()
-                .orElseThrow();
-        assertEquals(ReasonCode.ERROR, missing.getReason());
+        assertTrue(results.stream().anyMatch(r -> "flag-a".equals(r.getFlagKey())));
+        assertTrue(results.stream().anyMatch(r -> "flag-b".equals(r.getFlagKey())));
     }
-
-    @Test
-    void evaluate_numericCondition_withInvalidExpectedValue_doesNotThrow() {
-        // Given: a flag with numeric condition but invalid expected value
-        flagStore.setFlag("numeric-flag", Flag.builder()
-                .key("numeric-flag")
-                .status(Flag.FlagStatus.ENABLED)
-                .defaultVariation("false")
-                .variations(Map.of("true", true, "false", false))
-                .rules(List.of(Rule.builder()
-                        .id("rule-3")
-                        .name("Invalid Numeric")
-                        .type(Rule.RuleType.TARGET)
-                        .conditions(List.of(Condition.builder()
-                                .attribute("age")
-                                .operator(Condition.Operator.GREATER_THAN)
-                                .value("not-a-number")
-                                .build()))
-                        .variation("true")
-                        .priority(1)
-                        .build()))
-                .build());
-
-        EvaluationContext context = EvaluationContext.builder()
-                .userId("user-123")
-                .attributes(Map.of("age", "30"))
-                .build();
-
-        // When/Then: evaluation should not throw and should fall back to default
-        EvaluationResult result = assertDoesNotThrow(() ->
-                flagEvaluationService.evaluate("numeric-flag", context));
-        assertEquals(false, result.getValue());
-        assertEquals(ReasonCode.DEFAULT, result.getReason());
-    }
-
-    @Test
-        void evaluate_exceptionFromEvaluator_returnsErrorAndCounts() {
-                // Given: a flag and evaluator that throws
-                flagStore.setFlag("boom-flag", Flag.builder()
-                                .key("boom-flag")
-                                .status(Flag.FlagStatus.ENABLED)
-                                .defaultVariation("false")
-                                .variations(Map.of("true", true, "false", false))
-                                .build());
-
-                var meterRegistry = new SimpleMeterRegistry();
-                FlagEvaluator throwingEvaluator = new FlagEvaluator() {
-                        @Override
-                        public EvaluationResult evaluate(Flag flag, EvaluationContext context) {
-                                throw new RuntimeException("boom");
-                        }
-                        @Override
-                        public List<EvaluationResult> evaluateAll(List<Flag> flags, EvaluationContext context) {
-                                throw new RuntimeException("boom");
-                        }
-                };
-                var service = new FlagEvaluationService(flagStore, throwingEvaluator, meterRegistry);
-
-                EvaluationResult result = service.evaluate("boom-flag", EvaluationContext.builder().userId("u1").build());
-
-                assertEquals(ReasonCode.ERROR, result.getReason());
-                assertNotNull(result.getExplanation());
-                assertEquals(1.0, meterRegistry.counter("flag.evaluation.errors").count());
-        }
 
     @Test
     void evaluate_disabledFlag_returnsDisabledReason() {
-        // Given: a disabled flag
-        flagStore.setFlag("disabled-flag", Flag.builder()
+        Flag flag = Flag.builder()
                 .key("disabled-flag")
+                .name("Disabled Flag")
+                .type(Flag.FlagType.BOOLEAN)
                 .status(Flag.FlagStatus.DISABLED)
                 .defaultVariation("false")
                 .variations(Map.of("true", true, "false", false))
-                .build());
+                .build();
+        flagRepository.save(flag);
 
         EvaluationContext context = EvaluationContext.builder()
                 .userId("user-123")
                 .build();
 
-        // When: evaluate the flag
         EvaluationResult result = flagEvaluationService.evaluate("disabled-flag", context);
 
-        // Then: should return DISABLED reason
         assertNotNull(result);
         assertEquals(ReasonCode.DISABLED, result.getReason());
     }

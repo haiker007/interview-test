@@ -1,28 +1,17 @@
 package com.ecommerce.featureflag.controller;
 
+import com.ecommerce.featureflag.model.Flag;
+import com.ecommerce.featureflag.service.FlagRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
-import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ComponentScan;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-import io.micrometer.core.instrument.MeterRegistry;
-import java.util.List;
-import com.ecommerce.featureflag.model.evaluator.DefaultConditionEvaluator;
-import com.ecommerce.featureflag.service.DefaultFlagEvaluator;
-import com.ecommerce.featureflag.model.FlagEvaluator;
-import com.ecommerce.featureflag.service.DefaultFlagStore;
-import com.ecommerce.featureflag.service.FlagEvaluationService;
-import com.ecommerce.featureflag.service.FlagStore;
-import com.ecommerce.featureflag.service.ConditionEvaluatorRegistry;
-import com.ecommerce.featureflag.service.RuleEvaluatorRegistry;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Map;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -30,107 +19,81 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Tests for EvaluationController - TDD approach.
+ * Tests for EvaluationController using real context.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class, HibernateJpaAutoConfiguration.class})
-@ComponentScan(basePackages = "com.ecommerce.featureflag")
+@Transactional
 class EvaluationControllerTest {
 
-  @Configuration
-  static class TestConfig {
-    @Bean
-    public FlagStore flagStore() {
-      return new DefaultFlagStore();
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private FlagRepository flagRepository;
+
+    @BeforeEach
+    void setUp() {
+        flagRepository.deleteAll();
+        Flag boolFlag = Flag.builder()
+                .key("boolean-flag")
+                .name("Boolean Feature Flag")
+                .type(Flag.FlagType.BOOLEAN)
+                .status(Flag.FlagStatus.ENABLED)
+                .variations(Map.of("true", true, "false", false))
+                .defaultVariation("true")
+                .trackEvents(true)
+                .build();
+        flagRepository.save(boolFlag);
     }
 
-    @Bean
-    public ConditionEvaluatorRegistry conditionEvaluatorRegistry() {
-      return new ConditionEvaluatorRegistry(List.of(new DefaultConditionEvaluator()));
-    }
-
-    @Bean
-    public FlagEvaluator flagEvaluator(RuleEvaluatorRegistry ruleEvaluatorRegistry,
-                                       ConditionEvaluatorRegistry conditionEvaluatorRegistry) {
-      return new DefaultFlagEvaluator(ruleEvaluatorRegistry, conditionEvaluatorRegistry);
-    }
-
-    @Bean
-    public FlagEvaluationService flagEvaluationService(FlagStore flagStore, FlagEvaluator flagEvaluator, MeterRegistry meterRegistry) {
-      return new FlagEvaluationService(flagStore, flagEvaluator, meterRegistry);
-    }
-  }
-
-  @Autowired
-  private MockMvc mockMvc;
-
-  @Autowired
-  private FlagEvaluator flagEvaluator;
-
-  @Autowired
-  private FlagStore flagStore;
-
-  @BeforeEach
-  void setUp() {
-    // Reset flag store for each test
-  }
-
-  @Test
-  void evaluateGet_singleFlag_returnsEvaluationResult() throws Exception {
-    // When: GET request to evaluate a single flag
-    mockMvc.perform(get("/api/v1/flags/boolean-flag/evaluate")
+    @Test
+    void evaluateGet_singleFlag_returnsEvaluationResult() throws Exception {
+        mockMvc.perform(get("/api/v1/flags/boolean-flag/evaluate")
                         .param("userId", "user-123"))
-        // Then: should return 200 OK with evaluation result
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.flagKey").value("boolean-flag"))
-        .andExpect(jsonPath("$.value").exists());
-  }
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.flagKey").value("boolean-flag"))
+                .andExpect(jsonPath("$.value").value(true));
+    }
 
-  @Test
-  void evaluatePost_batchFlags_returnsMultipleResults() throws Exception {
-    // Given: a batch evaluation request
-    String requestBody = """
-        {
-            "flags": ["boolean-flag"],
-            "context": {
-                "userId": "user-123",
-                "attributes": {
-                    "tier": "premium"
+    @Test
+    void evaluatePost_batchFlags_returnsMultipleResults() throws Exception {
+        String requestBody = """
+                {
+                    "flags": ["boolean-flag"],
+                    "context": {
+                        "userId": "user-123",
+                        "attributes": {
+                            "tier": "premium"
+                        }
+                    }
                 }
-            }
-        }
-        """;
+                """;
 
-    // When: POST request to evaluate batch flags
-    mockMvc.perform(post("/api/v1/flags/evaluate")
+        mockMvc.perform(post("/api/v1/flags/evaluate")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody))
-        // Then: should return 200 OK with empty results (evaluateAll not fully implemented)
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.results").isArray());
-  }
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results").isArray())
+                .andExpect(jsonPath("$.results[0].flagKey").value("boolean-flag"));
+    }
 
-  @Test
-  void explain_getFlagExplanation_returnsDetailedInfo() throws Exception {
-    // When: GET request to explain a flag evaluation
-    mockMvc.perform(get("/api/v1/flags/boolean-flag/explain")
+    @Test
+    void explain_getFlagExplanation_returnsDetailedInfo() throws Exception {
+        mockMvc.perform(get("/api/v1/flags/boolean-flag/explain")
                         .param("userId", "user-123"))
-        // Then: should return 200 OK with explanation
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.flagKey").value("boolean-flag"))
-        .andExpect(jsonPath("$.reason").exists())
-        .andExpect(jsonPath("$.explanation").exists());
-  }
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.flagKey").value("boolean-flag"))
+                .andExpect(jsonPath("$.reason").exists())
+                .andExpect(jsonPath("$.explanation").exists());
+    }
 
-  @Test
-  void evaluate_unknownFlag_returnsErrorReason() throws Exception {
-    // When: evaluate unknown flag
-    mockMvc.perform(get("/api/v1/flags/unknown-flag/evaluate")
+    @Test
+    void evaluate_unknownFlag_returnsErrorReason() throws Exception {
+        mockMvc.perform(get("/api/v1/flags/unknown-flag/evaluate")
                         .param("userId", "user-123"))
-        // Then: should return evaluation result with ERROR reason
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.flagKey").value("unknown-flag"))
-        .andExpect(jsonPath("$.reason").value("ERROR"));
-  }
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.flagKey").value("unknown-flag"))
+                .andExpect(jsonPath("$.reason").value("ERROR"));
+    }
 }

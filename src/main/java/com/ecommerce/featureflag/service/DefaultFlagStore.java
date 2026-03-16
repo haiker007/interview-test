@@ -1,48 +1,42 @@
 package com.ecommerce.featureflag.service;
 
-import java.util.HashMap;
+import com.ecommerce.featureflag.model.Flag;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.util.Map;
 import java.util.Optional;
-
-import org.springframework.stereotype.Component;
-import com.ecommerce.featureflag.model.Flag;
+import java.util.stream.Collectors;
 
 /**
- * In-memory storage for feature flags.
+ * JPA-backed storage for feature flags.
  */
-@Component
+@Service
+@RequiredArgsConstructor
 public class DefaultFlagStore implements FlagStore {
 
-    private final Map<String, Flag> flags = new HashMap<>();
+    private final FlagRepository flagRepository;
 
-    public DefaultFlagStore() {
-        // Initialize with sample flags for testing
-        initializeSampleFlags();
-    }
-
+    @Override
+    @Transactional(readOnly = true)
     public Optional<Flag> getFlag(String key) {
-        return Optional.ofNullable(flags.get(key));
+        return flagRepository.findByKey(key);
     }
 
+    @Override
+    @Transactional
     public void setFlag(String key, Flag flag) {
-        flags.put(key, flag);
+        // Ensure key matches
+        flag.setKey(key);
+        flagRepository.save(flag);
     }
 
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, Flag> getAllFlags() {
-        return new HashMap<>(flags);
-    }
-
-    private void initializeSampleFlags() {
-        // Sample boolean flag - default to true when enabled
-        flags.put("boolean-flag", Flag.builder()
-                .id("flag-1")
-                .key("boolean-flag")
-                .name("Boolean Feature Flag")
-                .type(Flag.FlagType.BOOLEAN)
-                .status(Flag.FlagStatus.ENABLED)
-                .variations(Map.of("true", true, "false", false))
-                .defaultVariation("true")
-                .trackEvents(true)
-                .build());
+        return flagRepository.findAll().stream()
+                .collect(Collectors.toMap(Flag::getKey, flag -> flag));
     }
 }
